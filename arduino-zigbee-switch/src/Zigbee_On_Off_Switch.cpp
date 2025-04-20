@@ -18,6 +18,8 @@
 #endif
 
 #include "Zigbee.h"
+#include "esp_ieee802154.h"   // RSSI 用
+volatile int8_t g_last_rssi = -127;   // 最近の RSSI 値
 // Espressif 提供の高水準 Zigbee ラッパー
 // ZCL コマンド生成・バインディング管理などを簡素化
 
@@ -64,12 +66,25 @@ static SwitchData buttonFunctionPair[] = {{GPIO_INPUT_IO_TOGGLE_SWITCH, SWITCH_O
 // Zigbee ライトスイッチクラスを生成（EP=5）
 ZigbeeSwitch zbSwitch = ZigbeeSwitch(SWITCH_ENDPOINT_NUMBER);
 
+void my_rx_callback(/* Zigbee frame info */) {
+  g_last_rssi = esp_ieee802154_get_recent_rssi();  // dBm
+}
+
+static void IRAM_ATTR print_signal_timer(void *arg)
+{
+    // NOTE: シリアル送信は ISR 不可。フラグを立てても良いが
+    // Arduino core の task スケジューラは safe print に対応しているので OK
+    Serial.printf("RSSI=%3d dBm\n", g_last_rssi);
+}
+
+
 /********************* Zigbee functions **************************/
 static void onZbButton(SwitchData *button_func_pair) {
   // 受信した引数から対応する Zigbee コマンドを実行
   // ボタンが押された時のコールバック
   // ここではトグルコマンドを Zigbee 経由で送信します
   if (button_func_pair->func == SWITCH_ONOFF_TOGGLE_CONTROL) {
+    my_rx_callback();
     // Zigbee Cluster Library の On/Off Toggle コマンドを送信
     // Send toggle command to the light
     Serial.println("Toggling light");
@@ -161,6 +176,14 @@ void setup() {
     Serial.printf("Light manufacturer: %s\r\n", zbSwitch.readManufacturer(device->endpoint, device->short_addr, device->ieee_addr));
     Serial.printf("Light model: %s\r\n", zbSwitch.readModel(device->endpoint, device->short_addr, device->ieee_addr));
   }
+
+  const esp_timer_create_args_t tcfg = {
+    .callback = &print_signal_timer,
+    .name = "sig_out"
+  };
+  esp_timer_handle_t h;
+  esp_timer_create(&tcfg, &h);
+  esp_timer_start_periodic(h, 500 * 1000);
 
   Serial.println();
 }

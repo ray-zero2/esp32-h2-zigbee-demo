@@ -6,6 +6,7 @@
 // ボタン長押しでファクトリーリセット、短押しで手動トグルが可能です。
 // ***********************************************************************
 #include <Arduino.h>
+
 // Arduino 基本APIを利用 (GPIO / Serial / delay など)
 
 // Copyright 2024 Espressif Systems (Shanghai) PTE LTD
@@ -41,6 +42,10 @@
 #endif
 
 #include "Zigbee.h"
+#include "esp_timer.h"
+
+#include "esp_ieee802154.h"   // RSSI 用
+volatile int8_t g_last_rssi = -127;   // 最近の RSSI 値
 // Espressif の高水準 Zigbee ライブラリ
 // ZCL 生成・ネットワーク管理を簡略化
 
@@ -53,7 +58,21 @@ uint8_t button = BOOT_PIN;           // BOOT ボタンを工場出荷状態リ�
 ZigbeeLight zbLight = ZigbeeLight(ZIGBEE_LIGHT_ENDPOINT); // Zigbee Light クラスを生成 (EP=10)
 
 /********************* RGB LED functions **************************/
+
+
+void my_rx_callback(/* Zigbee frame info */) {
+  g_last_rssi = esp_ieee802154_get_recent_rssi();  // dBm
+}
+
+static void IRAM_ATTR print_signal_timer(void *arg)
+{
+    // NOTE: シリアル送信は ISR 不可。フラグを立てても良いが
+    // Arduino core の task スケジューラは safe print に対応しているので OK
+    Serial.printf("RSSI=%3d dBm\n", g_last_rssi);
+}
+
 void setLED(bool value) {
+  my_rx_callback();  // RSSI 更新
   // Zigbee コールバックから呼ばれ、LED 出力を更新
   digitalWrite(led, value);
 }
@@ -92,6 +111,15 @@ void setup() {
     Serial.print(".");    // ネットワーク参加待ち
     delay(100);
   }
+
+  const esp_timer_create_args_t tcfg = {
+    .callback = &print_signal_timer,
+    .name = "sig_out"
+  };
+  esp_timer_handle_t h;
+  esp_timer_create(&tcfg, &h);
+  esp_timer_start_periodic(h, 500 * 1000);
+
   Serial.println();
 }
 
